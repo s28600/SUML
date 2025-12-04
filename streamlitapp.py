@@ -13,6 +13,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+import autogluon
+from autogluon.tabular import TabularDataset, TabularPredictor
+
 st.set_page_config(
     page_title="SUML Sales Regression",
     layout="wide"
@@ -20,16 +23,15 @@ st.set_page_config(
 
 DATA_PATH = os.path.join("data", "sales.csv")
 
+
 @st.cache_data
 def load_data(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     return df
 
-#Preprocessing + trenowanie
+
+# Preprocessing + trenowanie
 FEATURE_COLS = [
-    "Day",
-    "Month",
-    "Year",
     "Age_Group",
     "Customer_Gender",
     "Country",
@@ -40,24 +42,15 @@ FEATURE_COLS = [
 ]
 TARGET_COL = "Order_Quantity"
 
+
 @st.cache_data
 def preprocess_data(df_raw: pd.DataFrame):
     df = df_raw.copy()
-
-    # drop
-    for col in ["Unit_Cost", "Unit_Price", "Profit", "Cost", "Revenue"]:
-        if col in df.columns:
-            df = df.drop(columns=[col])
-
-    for col in ["Customer_Age", "Date"]:
-        if col in df.columns:
-            df = df.drop(columns=[col])
 
     df = df[FEATURE_COLS + [TARGET_COL]].dropna()
 
     encoders: dict[str, LabelEncoder] = {}
     categorical_cols = [
-        "Month",
         "Age_Group",
         "Customer_Gender",
         "Country",
@@ -72,10 +65,7 @@ def preprocess_data(df_raw: pd.DataFrame):
         df[col] = le.fit_transform(df[col])
         encoders[col] = le
 
-    scaler = MinMaxScaler()
-    df["Year"] = scaler.fit_transform(df[["Year"]])
-
-    return df, encoders, scaler
+    return df, encoders
 
 
 @st.cache_resource
@@ -106,6 +96,38 @@ def train_model(df_processed: pd.DataFrame):
 
     return model, (X_train, X_test, y_train, y_test, y_pred), metrics
 
+@st.cache_resource
+def train_autogluon(df_processed: pd.DataFrame):
+    X = df_processed[FEATURE_COLS]
+    y = df_processed[TARGET_COL]
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+
+    train_data = X_train.copy()
+    train_data["Order Quantity"] = y_train
+
+    predictor = TabularPredictor(label="Order Quantity").fit(train_data, time_limit=40)
+    predictor.save("models/")
+
+    y_pred = predictor.predict(X_test)
+
+    mae = mean_absolute_error(y_test, y_pred)
+    mse = mean_squared_error(y_test, y_pred)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_test, y_pred)
+
+    metrics = {
+        "MAE": mae,
+        "MSE": mse,
+        "RMSE": rmse,
+        "R2": r2,
+    }
+
+    model = predictor.model_best
+    return model, (X_train, X_test, y_train, y_test, y_pred), metrics
+
+
 # Sidebar
 st.sidebar.title("Sales App")
 page = st.sidebar.selectbox(
@@ -128,9 +150,11 @@ except FileNotFoundError:
     st.stop()
 
 # Preprocessing + model
-sales_processed, encoders, year_scaler = preprocess_data(sales_raw)
+sales_processed, encoders = preprocess_data(sales_raw)
 model, splits, metrics = train_model(sales_processed)
+model_auto, splits_auto, metrics_auto = train_autogluon(sales_processed)
 X_train, X_test, y_train, y_test, y_pred = splits
+X_train_auto, X_test_auto, y_train_auto, y_test_auto, y_pred_auto = splits_auto
 
 # strina głowna
 
@@ -278,7 +302,7 @@ elif page == "Przygotowanie danych":
 
 # Model i metryki
 elif page == "Model i metryki":
-    st.title("Model – Linear Regression")
+    st.title("Model – Linear Regression (nasz)")
 
     with st.container():
         col1, col2 = st.columns(2)
@@ -312,84 +336,93 @@ elif page == "Model i metryki":
 
     st.altair_chart(chart, use_container_width=True)
 
+#Autogluon
+    st.title("Autogluon - AutoML")
+
+    with st.container():
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("Metryki")
+            st.write(f"**MAE**: {metrics_auto['MAE']:.2f}")
+            st.write(f"**MSE**: {metrics_auto['MSE']:.2f}")
+            st.write(f"**RMSE**: {metrics_auto['RMSE']:.2f}")
+            st.write(f"**R²**: {metrics_auto['R2']:.3f}")
+
+        with col2:
+            st.subheader("Parametry modelu")
+            st.write(f"Model: `{model_auto}`")
+            st.write(f"Liczba cech: {len(FEATURE_COLS)}")
+            st.write(f"Liczba próbek treningowych: {len(X_train_auto)}")
+
+    st.subheader("Porównanie: y_test vs y_pred")
+    comparison_df = pd.DataFrame(
+        {
+            "y_test": y_test_auto.values,
+            "y_pred": y_pred_auto,
+        }
+    )
+
+    chart = alt.Chart(comparison_df).mark_circle(size=60).encode(
+        x="y_test",
+        y="y_pred",
+        tooltip=["y_test", "y_pred"],
+    ).interactive()
+
+    st.altair_chart(chart, use_container_width=True)
+
 # Prognoza zamówień
 elif page == "Prognoza zamówień":
     st.title("Prognoza `Order_Quantity`")
 
     st.write("Wybierz wartości cech, a model zwróci przewidywaną liczbę zamówionych sztuk.")
 
-    col1, col2 = st.columns(2)
+    age_group = st.selectbox(
+        "Age_Group", sorted(sales_raw["Age_Group"].unique().tolist())
+    )
+    gender = st.selectbox(
+        "Customer_Gender", sorted(sales_raw["Customer_Gender"].unique().tolist())
+    )
+    country = st.selectbox(
+        "Country", sorted(sales_raw["Country"].unique().tolist())
+    )
+    state = st.selectbox("State", sorted(sales_raw["State"].unique().tolist()))
+    product_category = st.selectbox(
+        "Product_Category", sorted(sales_raw["Product_Category"].unique().tolist())
+    )
+    sub_category = st.selectbox(
+        "Sub_Category", sorted(sales_raw["Sub_Category"].unique().tolist())
+    )
+    product = st.selectbox(
+        "Product", sorted(sales_raw["Product"].unique().tolist())
+    )
 
-    with col1:
-        day = st.slider(
-            "Day",
-            int(sales_raw["Day"].min()),
-            int(sales_raw["Day"].max()),
-            int(sales_raw["Day"].median()),
-        )
+if st.button("Przewiduj Order_Quantity"):
+    with st.spinner("Model liczy prognozę..."):
+        time.sleep(0.8)
 
-        month = st.selectbox("Month", sorted(sales_raw["Month"].unique().tolist()))
-        year = st.slider(
-            "Year",
-            int(sales_raw["Year"].min()),
-            int(sales_raw["Year"].max()),
-            int(sales_raw["Year"].median()),
-        )
+        sample_dict = {
+            "Age_Group": age_group,
+            "Customer_Gender": gender,
+            "Country": country,
+            "State": state,
+            "Product_Category": product_category,
+            "Sub_Category": sub_category,
+            "Product": product,
+        }
+        sample_df = pd.DataFrame([sample_dict])
 
-        age_group = st.selectbox(
-            "Age_Group", sorted(sales_raw["Age_Group"].unique().tolist())
-        )
-        gender = st.selectbox(
-            "Customer_Gender", sorted(sales_raw["Customer_Gender"].unique().tolist())
-        )
+        # Encoding
+        for col, le in encoders.items():
+            sample_df[col] = le.transform(sample_df[col])
 
-    with col2:
-        country = st.selectbox(
-            "Country", sorted(sales_raw["Country"].unique().tolist())
-        )
-        state = st.selectbox("State", sorted(sales_raw["State"].unique().tolist()))
-        product_category = st.selectbox(
-            "Product_Category", sorted(sales_raw["Product_Category"].unique().tolist())
-        )
-        sub_category = st.selectbox(
-            "Sub_Category", sorted(sales_raw["Sub_Category"].unique().tolist())
-        )
-        product = st.selectbox(
-            "Product", sorted(sales_raw["Product"].unique().tolist())
-        )
+        # Kolumny w odpowiedniej kolejności
+        sample_df = sample_df[FEATURE_COLS]
 
-    if st.button("Przewiduj Order_Quantity"):
-        with st.spinner("Model liczy prognozę..."):
-            time.sleep(0.8)
+        # Predykcja
+        pred = model.predict(sample_df)[0]
 
-            sample_dict = {
-                "Day": day,
-                "Month": month,
-                "Year": year,
-                "Age_Group": age_group,
-                "Customer_Gender": gender,
-                "Country": country,
-                "State": state,
-                "Product_Category": product_category,
-                "Sub_Category": sub_category,
-                "Product": product,
-            }
-            sample_df = pd.DataFrame([sample_dict])
+        st.success(f"Przewidywana wartość **Order_Quantity**: `{pred:.2f}`")
 
-            # Encoding
-            for col, le in encoders.items():
-                sample_df[col] = le.transform(sample_df[col])
-
-            # Skalowanie Year
-            sample_df["Year"] = year_scaler.transform(sample_df[["Year"]])
-
-            # Kolumny w odpowiedniej kolejności
-            sample_df = sample_df[FEATURE_COLS]
-
-            # Predykcja
-            pred = model.predict(sample_df)[0]
-
-            st.success(f"Przewidywana wartość **Order_Quantity**: `{pred:.2f}`")
-
-            with st.expander("Zobacz dane wejściowe użyte do prognozy"):
-                st.write(sample_dict)
+        with st.expander("Zobacz dane wejściowe użyte do prognozy"):
+            st.write(sample_dict)
