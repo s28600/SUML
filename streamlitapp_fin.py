@@ -167,11 +167,16 @@ if page == "Strona główna":
 
     age_group = st.selectbox("Age_Group", sorted(sales_raw["Age_Group"].unique().tolist()))
     gender = st.selectbox("Customer_Gender", sorted(sales_raw["Customer_Gender"].unique().tolist()))
-    country = st.selectbox("Country", sorted(sales_raw["Country"].unique().tolist()))
-    state = st.selectbox("State", sorted(sales_raw["State"].unique().tolist()))
-    product_category = st.selectbox("Product_Category", sorted(sales_raw["Product_Category"].unique().tolist()))
-    sub_category = st.selectbox("Sub_Category", sorted(sales_raw["Sub_Category"].unique().tolist()))
-    product = st.selectbox("Product", sorted(sales_raw["Product"].unique().tolist()))
+
+    country = st.selectbox("Country",sorted(sales_raw["Country"].dropna().unique().tolist()))
+    country_df = sales_raw[sales_raw["Country"] == country]
+    state = st.selectbox("State",sorted(country_df["State"].dropna().unique().tolist()))
+
+    product_category = st.selectbox("Product_Category",sorted(country_df["Product_Category"].dropna().unique().tolist()))
+    pc_df = country_df[country_df["Product_Category"] == product_category]
+    sub_category = st.selectbox("Sub_Category",sorted(pc_df["Sub_Category"].dropna().unique().tolist()))
+    sc_df = pc_df[pc_df["Sub_Category"] == sub_category]
+    product = st.selectbox("Product",sorted(sc_df["Product"].dropna().unique().tolist()))
 
     if st.button("Przewiduj Order_Quantity"):
         with st.spinner("Model liczy prognozę..."):
